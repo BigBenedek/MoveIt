@@ -1,0 +1,35 @@
+[
+  {
+    "x": 1680,
+    "y": 390,
+    "button": "left",
+    "delay": 1.5,
+    "is_double_click": false,
+    "offset_x": 0,
+    "offset_y": 0,
+    "is_scroll": false,
+    "scroll_amount": 0
+  },
+  {
+    "x": 420,
+    "y": 790,
+    "button": "left",
+    "delay": 0.1,
+    "is_double_click": false,
+    "offset_x": 0,
+    "offset_y": 0,
+    "is_scroll": false,
+    "scroll_amount": 0
+  },
+  {
+    "x": 1680,
+    "y": 390,
+    "button": "left",
+    "delay": 0,
+    "is_double_click": false,
+    "offset_x": 0,
+    "offset_y": 0,
+    "is_scroll": true,
+    "scroll_amount": -111
+  }
+]

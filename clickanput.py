@@ -3,7 +3,7 @@ import pynput.keyboard as keyboard
 import pyautogui
 import time
 import threading
-import Click
+from Click import Click
 
 
 recording = False
@@ -20,14 +20,23 @@ def on_click(x, y, button, pressed):
     global recording, replaying, click_positions, button_exclusions
     if button == mouse.Button.left and pressed and recording:
         # Check if click is within any excluded button area
-        double_click = False
         if is_click_on_button(x, y):
             return
-        if click_positions and x == click_positions[-1][0] and y == click_positions[-1][1] and click_positions[-1][4] == False:
-            click_positions[-1][4] = True
+
+        # Check for double click (rapid clicks at same position)
+        double_click = False
+        if (click_positions and
+            x == click_positions[-1].x and
+            y == click_positions[-1].y and
+            not click_positions[-1].is_double_click):
+            # Convert last click to double click
+            click_positions[-1].is_double_click = True
             return
-        click = Click.Click(x, y, button=button.name, delay=0, is_double_click=double_click)
-        click_positions.append(click.to_array())
+
+        # Create new click
+        click = Click(x, y, button=button.name, delay=0, is_double_click=double_click)
+        click_positions.append(click)
+        print(f"Recorded click at: ({x}, {y})")
         
 
 def is_click_on_button(x, y):
@@ -165,22 +174,55 @@ def clear_clicks():
 
 def replay_clicks():
     """
-    Replays the recorded clicks at the stored positions.
+    Replays the recorded clicks at the stored positions with individual delays and offsets.
     """
-    global click_positions, replaying, replay_step_time
+    global click_positions, replaying
 
     if not click_positions:
         print("No clicks recorded to replay")
         return
 
+    cycle_count = 0
     while replaying:
-        for position in click_positions:
+        cycle_count += 1
+        print(f"Starting replay cycle #{cycle_count}")
+
+        for i, click_obj in enumerate(click_positions):
             if not replaying:  # Check if we should stop
                 break
-            pyautogui.click(position)  # Click at the recorded position
-            #print(f"Clicked at: {position}")
-            time.sleep(replay_step_time)  # Use configurable step time
-    
+            # Calculate position with offset for this cycle
+            current_x = click_obj.x + (click_obj.offset_x * (cycle_count - 1))
+            current_y = click_obj.y + (click_obj.offset_y * (cycle_count - 1))
+
+            # If this item is a scroll action, perform scroll instead of click
+            if getattr(click_obj, 'is_scroll', False):
+                try:
+                    # Ensure mouse is at the intended coordinates before scrolling.
+                    # Some platforms/drivers ignore x/y in scroll, so move first then scroll.
+                    pyautogui.moveTo(current_x, current_y)
+                    # tiny pause to ensure OS updates pointer location
+                    time.sleep(0.02)
+                    pyautogui.scroll(int(click_obj.scroll_amount))
+                    print(f"Scrolled {click_obj.scroll_amount} at: ({current_x}, {current_y})")
+                except Exception as e:
+                    print(f"Scroll failed: {e}")
+            else:
+                # Perform the click
+                if click_obj.is_double_click:
+                    pyautogui.doubleClick(current_x, current_y)
+                    print(f"Double-clicked at: ({current_x}, {current_y})")
+                else:
+                    pyautogui.click(current_x, current_y)
+                    print(f"Clicked at: ({current_x}, {current_y})")
+
+            # Wait for the specified delay after this click/scroll
+            if getattr(click_obj, 'delay', 0) > 0:
+                time.sleep(click_obj.delay)
+
+        # Optional: small delay between cycles
+        if replaying and cycle_count < 100:  # Prevent infinite loops
+            time.sleep(0.1)  # Small pause between cycles
+
     print("Replay finished")
 
 # not used yet

@@ -1,6 +1,7 @@
 
 # GUI application for ClickNCommand
 import tkinter as tk
+from tkinter import ttk
 
 # The file where the keyboard and mouse events are handled
 import clickanput as can
@@ -11,6 +12,8 @@ import atexit
 import json
 
 import tkinter.filedialog as filedialog
+from Click import Click
+import pyautogui
 
 save_file_name = 'test.json'
 
@@ -24,6 +27,11 @@ def on_closing():
 # Start replay in a separate thread
 def start_replay():
     """Start replay in a separate thread"""
+    # Avoid starting multiple replay threads
+    if getattr(can, 'replaying', False):
+        print("Replay already running")
+        return
+
     can.replaying = True
     import threading
     replay_thread = threading.Thread(target=can.replay_clicks)
@@ -108,9 +116,11 @@ def save_recorded_clicks():
     """Save recorded clicks to a JSON file"""
     global can, save_file_name
 
+    # Convert Click objects to dictionaries
+    click_data = [click_obj.to_dict() for click_obj in can.click_positions]
    
     with open(save_file_name, 'w+') as f:
-        json.dump(can.click_positions, f)
+        json.dump(click_data, f, indent=2)
     print(f"Recorded clicks saved to {save_file_name}")
 
 
@@ -122,7 +132,10 @@ def load_recorded_clicks():
                                                    filetypes=[("JSON files", "*.json"), ("All files", "*.*")])
     
     with open(save_file_name, 'r') as f:
-        can.click_positions = json.load(f)
+        click_data = json.load(f)
+    
+    # Convert dictionaries back to Click objects
+    can.click_positions = [Click.from_dict(data) for data in click_data]
     print(f"Loaded {len(can.click_positions)} recorded clicks from {save_file_name}")
     
 
@@ -130,9 +143,9 @@ def load_recorded_clicks():
 root = tk.Tk()
 root.title("ClickNCommand")
 root.configure(bg="lightblue")
-root.minsize(700, 500)
-root.maxsize(700, 500)
-root.geometry("600x600+50+50")
+root.minsize(800, 700)
+root.maxsize(1200, 900)
+root.geometry("900x800+50+50")
 
 # Don't start listeners by default - user will control them with buttons
 
@@ -145,6 +158,12 @@ root.bind('<Configure>', on_window_configure)
 
 # Schedule initial button registration after GUI is fully loaded
 root.after(500, register_button_exclusions)
+
+# Auto-start keyboard listener so hotkeys work immediately (toggleable from GUI)
+try:
+    can.start_keyboard_listener()
+except Exception as e:
+    print(f"Could not start keyboard listener automatically: {e}")
 
 # Keyboard listener controls
 listener_frame = tk.Frame(root, bg="lightblue")
@@ -213,6 +232,201 @@ step_time_spinbox.pack(side=tk.LEFT, padx=2)
 # Initialize the step time in clickanput module
 can.replay_step_time = 0.1
 
+# Click editing table
+click_table_frame = tk.Frame(root, bg="lightblue")
+click_table_frame.pack(pady=10, fill=tk.BOTH, expand=True)
+
+tk.Label(click_table_frame, text="Click Editor - Edit individual clicks:", bg="lightblue", font=("Arial", 10, "bold")).pack(pady=5)
+
+
+# Create Treeview for click editing (added per-row Scroll column)
+columns = ('index', 'x', 'y', 'delay', 'offset_x', 'offset_y', 'scroll', 'double_click')
+click_tree = ttk.Treeview(click_table_frame, columns=columns, show='headings', height=6)
+
+# Define column headings
+click_tree.heading('index', text='#')
+click_tree.heading('x', text='X')
+click_tree.heading('y', text='Y')
+click_tree.heading('delay', text='Delay (s)')
+click_tree.heading('offset_x', text='Offset X')
+click_tree.heading('offset_y', text='Offset Y')
+click_tree.heading('scroll', text='Scroll')
+click_tree.heading('double_click', text='Double Click')
+
+# Define column widths
+click_tree.column('index', width=40, anchor='center')
+click_tree.column('x', width=80, anchor='center')
+click_tree.column('y', width=80, anchor='center')
+click_tree.column('delay', width=100, anchor='center')
+click_tree.column('offset_x', width=80, anchor='center')
+click_tree.column('offset_y', width=80, anchor='center')
+click_tree.column('scroll', width=80, anchor='center')
+click_tree.column('double_click', width=100, anchor='center')
+
+click_tree.pack(fill=tk.BOTH, expand=True)
+
+# Scrollbar for the treeview
+scrollbar = ttk.Scrollbar(click_table_frame, orient=tk.VERTICAL, command=click_tree.yview)
+click_tree.configure(yscroll=scrollbar.set)
+scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+# Function to refresh the click table
+def refresh_click_table():
+    """Refresh the click table with current click positions"""
+    # Clear existing items
+    for item in click_tree.get_children():
+        click_tree.delete(item)
+    
+    # Add current clicks
+    for i, click_obj in enumerate(can.click_positions):
+        # Show scroll amount in its own column; double-click column shows Yes/No
+        scroll_val = click_obj.scroll_amount if getattr(click_obj, 'is_scroll', False) else 0
+        click_tree.insert('', tk.END, values=(
+            i+1,
+            click_obj.x,
+            click_obj.y,
+            click_obj.delay,
+            click_obj.offset_x,
+            click_obj.offset_y,
+            scroll_val,
+            'Yes' if click_obj.is_double_click else 'No'
+        ))
+
+# Function to handle cell editing
+def on_tree_double_click(event):
+    """Handle double-click on treeview to edit cell"""
+    region = click_tree.identify_region(event.x, event.y)
+    if region != 'cell':
+        return
+    
+    column = click_tree.identify_column(event.x)
+    row = click_tree.identify_row(event.y)
+    
+    if not row or not column:
+        return
+    
+    # Get column index
+    col_index = int(column[1:]) - 1  # ttk columns are 1-indexed
+    
+    # Get current value
+    item = click_tree.item(row)
+    current_value = item['values'][col_index]
+    
+    # Create entry widget for editing
+    x, y, width, height = click_tree.bbox(row, column)
+    
+    # Create entry
+    entry = tk.Entry(click_table_frame)
+    entry.place(x=x, y=y, width=width, height=height)
+    entry.insert(0, str(current_value))
+    entry.focus()
+    
+    def save_edit():
+        """Save the edited value"""
+        new_value = entry.get()
+        try:
+            # Validate and convert value based on column
+            if col_index in [1, 2, 4, 5, 6]:  # X, Y, Offset X, Offset Y, Scroll - integers
+                # Allow user to type "Scroll 100" in scroll column; parse that
+                s = str(new_value).strip()
+                if s.lower().startswith('scroll'):
+                    parts = s.replace(':', ' ').split()
+                    amount = 0
+                    for p in parts:
+                        try:
+                            amount = int(p)
+                            break
+                        except ValueError:
+                            continue
+                    new_value = int(amount)
+                else:
+                    new_value = int(float(s))
+            elif col_index == 3:  # Delay - float
+                new_value = float(new_value)
+            elif col_index == 7:  # Double click - boolean
+                nv = str(new_value).strip()
+                new_value_bool = nv.lower() in ('yes', 'true', '1', 'y')
+                new_value = 'Yes' if new_value_bool else 'No'
+            
+            # Update the values list
+            values = list(item['values'])
+            values[col_index] = new_value
+            click_tree.item(row, values=values)
+            
+            # Update the actual Click object
+            click_index = int(values[0]) - 1
+            if 0 <= click_index < len(can.click_positions):
+                click_obj = can.click_positions[click_index]
+                if col_index == 1:  # X
+                    click_obj.x = int(new_value)
+                elif col_index == 2:  # Y
+                    click_obj.y = int(new_value)
+                elif col_index == 3:  # Delay
+                    click_obj.delay = float(new_value)
+                elif col_index == 4:  # Offset X
+                    click_obj.offset_x = int(new_value)
+                elif col_index == 5:  # Offset Y
+                    click_obj.offset_y = int(new_value)
+                elif col_index == 6:  # Scroll amount
+                    click_obj.scroll_amount = int(new_value)
+                    click_obj.is_scroll = (int(new_value) != 0)
+                elif col_index == 7:  # Double click
+                    click_obj.is_scroll = False
+                    click_obj.is_double_click = (new_value == 'Yes')
+            
+            print(f"Updated click {click_index + 1}: {values}")
+            
+        except ValueError as e:
+            print(f"Invalid value: {e}")
+        
+        entry.destroy()
+    
+    def cancel_edit(event=None):
+        """Cancel the edit"""
+        entry.destroy()
+    
+    entry.bind('<Return>', lambda e: save_edit())
+    entry.bind('<Escape>', cancel_edit)
+    entry.bind('<FocusOut>', lambda e: save_edit())
+
+# Bind double-click event to treeview
+click_tree.bind('<Double-1>', on_tree_double_click)
+
+# Button to refresh table
+refresh_table_button = tk.Button(click_table_frame, text="Refresh Table", command=refresh_click_table, width=15)
+refresh_table_button.pack(pady=5)
+
+# Scroll-action controls: amount + add button
+scroll_control_frame = tk.Frame(click_table_frame, bg="lightblue")
+scroll_control_frame.pack(pady=4)
+
+tk.Label(scroll_control_frame, text="Scroll amount:", bg="lightblue").pack(side=tk.LEFT, padx=2)
+scroll_amount_var = tk.StringVar(value="100")
+scroll_amount_spinbox = tk.Spinbox(scroll_control_frame, from_=-1000, to=1000, increment=1, textvariable=scroll_amount_var, width=8)
+scroll_amount_spinbox.pack(side=tk.LEFT, padx=2)
+
+def add_scroll_at_cursor():
+    """Add a scroll action at current cursor position to the click list"""
+    try:
+        amount = int(scroll_amount_var.get())
+    except ValueError:
+        print("Invalid scroll amount")
+        return
+
+    try:
+        mx, my = pyautogui.position()
+    except Exception as e:
+        print(f"Could not get mouse position: {e}")
+        return
+
+    scroll_click = Click(x=mx, y=my, delay=0, is_double_click=False, offset_x=0, offset_y=0, is_scroll=True, scroll_amount=amount)
+    can.click_positions.append(scroll_click)
+    print(f"Added scroll action at ({mx},{my}) amount={amount}")
+    refresh_click_table()
+
+add_scroll_button = tk.Button(scroll_control_frame, text="Add Scroll at Cursor", command=add_scroll_at_cursor)
+add_scroll_button.pack(side=tk.LEFT, padx=6)
+
 # Clear clickpoints button
 tk.Label(root, text="Clear recorded clicks", bg="lightblue").pack(pady=5)
 clear_button = tk.Button(root, text="Clear clickpoints", command=can.clear_clicks, width=20)
@@ -230,12 +444,20 @@ def update_status():
     kb_running = can.key_listener and can.key_listener.running
     mouse_running = can.mouse_listener and can.mouse_listener.running
     
+    # Get current mouse position
+    try:
+        mouse_x, mouse_y = pyautogui.position()
+        mouse_pos_text = f" | Mouse: ({mouse_x}, {mouse_y})"
+    except Exception as e:
+        mouse_pos_text = " | Mouse: N/A"
+    
     status_text = f"Recording: {'ON' if can.recording else 'OFF'} | "
     status_text += f"Replaying: {'ON' if can.replaying else 'OFF'} | "
     status_text += f"Clicks recorded: {len(can.click_positions)} | "
     status_text += f"Button exclusions: {len(can.button_exclusions)} | "
     status_text += f"Keyboard Listener: {'ON' if kb_running else 'OFF'} | "
     status_text += f"Mouse Listener: {'ON' if mouse_running else 'OFF'}"
+    status_text += mouse_pos_text
     
     if hasattr(update_status, 'status_label'):
         update_status.status_label.config(text=status_text)
@@ -243,8 +465,17 @@ def update_status():
         update_status.status_label = tk.Label(status_frame, text=status_text, bg="lightblue", font=("Arial", 9))
         update_status.status_label.pack()
     
+    # Auto-refresh click table when clicks change
+    if hasattr(update_status, 'last_click_count'):
+        if update_status.last_click_count != len(can.click_positions):
+            refresh_click_table()
+    else:
+        refresh_click_table()
+    
+    update_status.last_click_count = len(can.click_positions)
+    
     # Schedule next update (ms)
-    root.after(500, update_status)
+    root.after(100, update_status)  # Faster update for mouse position
 
 # Start status updates
 update_status()
